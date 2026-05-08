@@ -23,11 +23,18 @@ A **DID** (Decentralised Identifier) is like an email address that nobody can fa
 3. The admin clicks **Issue Diploma** next to a student, fills in degree details, and clicks **Issue Diploma ✓**.
    - If the student's wallet is **open**: the credential is delivered in real time (≤30 s).
    - If the student's wallet is **offline**: the diploma is queued and auto-delivered the next time they open their wallet.
-4. The diploma appears in the student's wallet, cryptographically signed by the university's DID.
+4. The diploma appears in the student's **My Diplomas** page, cryptographically signed by the university's DID.
 5. An **employer** opens the Verifier Portal and starts a verification session. The student presents their diploma from the wallet.
 6. The verifier portal checks the signature and displays ✓ Verified with all the diploma fields.
 
-> **Alternative flow (QR code):** The Issuer Portal also has an **Issue Diploma** page that generates a one-time QR code / invitation URL. This is useful for students who haven't registered a wallet account yet.
+### Revocation
+
+If a diploma must be revoked (e.g. the student withdrew or it was issued in error):
+
+1. Issuer Portal → **Students** → click **Credentials** next to the student → click **Revoke** on the credential → enter a reason.
+2. The revocation bit is flipped immediately in the agent. The diploma moves to **Revoking…** state.
+3. The student's wallet polls every 10 seconds and automatically acknowledges the revocation. Once confirmed, the diploma moves from the **Verified Diplomas** tab to the **Revoked** tab (most recently revoked shown first).
+4. The Issuer Portal **Dashboard** reflects the final **Revoked** state with the confirmation timestamp.
 
 ---
 
@@ -216,7 +223,8 @@ This starts four development servers in parallel. Once they are ready, open thes
 ### 6c. View the diploma (Student Wallet)
 
 1. Switch to the Student Wallet tab (http://localhost:5174).
-2. The diploma should appear in **My Credentials** within 30 seconds.
+2. The diploma should appear under **Verified Diplomas** within 30 seconds.
+3. Revoked diplomas move to the **Revoked** tab automatically once the wallet acknowledges the revocation.
 
 ### 6d. Verify the diploma (Verifier Portal)
 
@@ -228,23 +236,12 @@ This starts four development servers in parallel. Once they are ready, open thes
 
 ---
 
-## Alternative: QR code / invitation URL flow
-
-For students who haven't registered a wallet account, the Issuer Portal's **Issue Diploma** page (sidebar) generates a one-time QR code:
-
-1. Issuer Portal → **Issue Diploma** → fill in student details → **Generate Diploma Offer →**
-2. Share the invitation URL with the student.
-3. Student opens the wallet → **Claim Credential** → paste URL → **Connect & Claim**.
-
----
-
 ## Issuer Portal — pages
 
 | Page | What it does |
 |------|-------------|
-| **Dashboard** | Lists all issued credentials with status, student DID, JWT token, and Cardano tx hash |
-| **Students** | Lists registered students; issue diplomas directly to connected wallets or queue for offline students |
-| **Issue Diploma** | QR-code flow for students without a wallet account |
+| **Dashboard** | Lists all issued credentials with live status (Active / Revoking / Revoked), filter tabs, search, and Cardano tx hash |
+| **Students** | Lists registered students with avatars and wallet status; issue diplomas directly or queue for offline students; view and revoke credentials per student |
 | **Connections** | Raw DIDComm connection list (debugging) |
 
 ---
@@ -260,7 +257,7 @@ For students who haven't registered a wallet account, the Issuer Portal's **Issu
 
 ### Diploma never arrives in the wallet
 - The mediator must be healthy. Run `pnpm run health` again.
-- Check that the invitation URL was copied **completely** (these are long).
+- If the student wallet was offline when the diploma was issued, it will be auto-delivered the next time they open the wallet — no action needed.
 - Check Docker is still running: `docker ps` should show 6 containers.
 
 ### Scripts fail on Windows
