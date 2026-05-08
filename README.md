@@ -16,6 +16,59 @@ A **DID** (Decentralised Identifier) is like an email address that nobody can fa
 
 ---
 
+## How credential issuance works in detail
+
+### Happy path — wallet is open
+
+1. Admin clicks **Issue Diploma** in the Students tab and submits the form.
+2. The Issuer Portal calls the Issuer API (`POST /api/agent/issue-credentials/credential-offers`) with the student's `connectionId`, the issuing DID, schema ID, and claims.
+3. The Cloud Agent creates the offer and pushes it over DIDComm through the mediator to the student's wallet.
+4. The student wallet (Hyperledger Identus Edge Agent SDK running in the browser) auto-accepts the offer and stores the signed JWT credential in Pluto (the in-browser credential store).
+5. The Issuer API polls the credential record until `protocolState === "CredentialSent"`, then optionally writes the JWT hash to Cardano.
+6. The credential appears in the student's **My Diplomas → Verified Diplomas** tab.
+
+### Offline student — diploma queued
+
+If the student's wallet is not open (or has never been opened), there is no live DIDComm channel for the offer to travel through. Instead:
+
+1. The Issuer Portal calls `POST /api/students/:id/diplomas/pending` to store the diploma in `data/pending-diplomas.json` on the Issuer API server.
+2. The portal shows **"Diploma Queued"** — no further action needed.
+3. When the student next opens their wallet, the wallet calls `POST /api/students/:id/diplomas/deliver`.
+4. The Issuer API waits for the DIDComm handshake to complete (up to 60 s), then issues all queued diplomas one by one using `issueCredentialNow()`.
+5. Successfully issued entries are removed from `pending-diplomas.json`. Failed entries stay and will retry on the next wallet open.
+
+### Stale connection fallback
+
+If a student has a `connectionId` stored but the Cloud Agent no longer recognises it (e.g. after a container restart):
+
+- The wallet calls `GET /api/students/:id/connection/verify` on startup. If the agent returns 404, the server clears the `connectionId` and the wallet auto-establishes a fresh connection.
+- If the Issuer Portal tries to issue directly and the Cloud Agent rejects the offer (any non-2xx), the portal automatically falls back to queuing the diploma instead of showing an error.
+
+---
+
+## How credential revocation works in detail
+
+Revocation is a **two-phase** process to keep the issuer portal and the student wallet in sync.
+
+### Phase 1 — Issuer initiates
+
+1. Admin clicks **Revoke** on a credential in the Students tab, enters a reason, and confirms.
+2. The Issuer API calls `PATCH /credential-status/revoke-credential/:recordId` on the Cloud Agent, which flips the status list bit on-chain (or in the local registry in dev mode).
+3. The credential record in `students.json` is updated: `revocationPendingAt` is set to the current timestamp and `revocationReason` is stored. `revoked` remains `false`.
+4. The Issuer Portal immediately shows the credential as **Revoking…** (yellow badge).
+
+### Phase 2 — Student wallet acknowledges
+
+5. The student wallet polls `GET /api/students/:id/credentials` every **10 seconds**.
+6. When it detects a credential with `revocationPendingAt` set but `revocationConfirmedAt` unset, it calls `POST /api/students/:id/credentials/:recordId/revocation-confirmed`.
+7. The Issuer API sets `revoked: true` and `revocationConfirmedAt` on the credential record.
+8. The Issuer Portal sees `revoked: true` on its next poll and updates the badge to **Revoked** (red), showing the confirmation timestamp.
+9. In the student wallet, the diploma moves from **Verified Diplomas** to the **Revoked** tab (sorted newest-first by `revocationConfirmedAt`).
+
+> **Why two phases?** The status list bit is flipped immediately (so verifiers see the revocation at once), but the student wallet needs a chance to update its local Pluto store. The two-phase design ensures the issuer portal only shows **Revoked** once the student's device has actually processed it — preventing a race condition where the wallet still shows the credential as valid while the portal shows it as revoked.
+
+---
+
 ## How the flow works (plain English)
 
 1. The **student** registers an account in the Student Wallet (email + password). On first login the wallet auto-connects to the university's issuer agent via DIDComm.
