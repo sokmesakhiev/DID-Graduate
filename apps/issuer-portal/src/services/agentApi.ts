@@ -165,6 +165,7 @@ export async function createCredentialOffer(request: DiplomaIssuanceRequest & {
       schemaId,
       credentialFormat: "JWT",
       automaticIssuance: true,
+      credentialStatus: { statusPurpose: "Revocation" },
     }),
   });
   if (!res.ok) {
@@ -236,6 +237,7 @@ export interface RegisteredStudent {
   connectionId?: string;
   walletDid?: string;
   createdAt: string;
+  issuedCredentials?: IssuedCredential[];
 }
 
 export async function fetchStudents(): Promise<RegisteredStudent[]> {
@@ -253,6 +255,58 @@ export async function fetchStudent(id: string): Promise<RegisteredStudent> {
 
 /** Queue a diploma for a student who hasn't connected yet.
  *  The issuer-api will auto-issue it as soon as the student's wallet connects. */
+// ── Issued Credentials & Revocation ─────────────────────────────────────────
+
+export interface IssuedCredential {
+  credentialRecordId: string;
+  degree: string;
+  graduationDate: string;
+  gpa?: number;
+  issuedAt: string;
+  revoked: boolean;
+  revocationPendingAt?: string;
+  revocationConfirmedAt?: string;
+  revocationReason?: string;
+}
+
+export async function fetchIssuedCredentials(studentId: string): Promise<IssuedCredential[]> {
+  const res = await fetch(`${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials`);
+  if (!res.ok) throw new Error(`fetchIssuedCredentials: ${res.status}`);
+  return res.json();
+}
+
+export async function saveIssuedCredential(
+  studentId: string,
+  data: { credentialRecordId: string; degree: string; graduationDate: string; gpa?: number }
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error: string }).error ?? `saveIssuedCredential: ${res.status}`);
+  }
+}
+
+export async function revokeCredential(
+  studentId: string,
+  recordId: string,
+  reason?: string
+): Promise<{ status: "pending" | "confirmed" }> {
+  const res = await fetch(
+    `${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials/${encodeURIComponent(recordId)}/revoke`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error: string }).error ?? `revokeCredential: ${res.status}`);
+  }
+  const data = await res.json() as { status?: string };
+  return { status: (data.status ?? "pending") as "pending" | "confirmed" };
+}
+
 export async function queueDiploma(
   studentId: string,
   data: {

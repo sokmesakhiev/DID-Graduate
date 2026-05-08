@@ -6,6 +6,9 @@ import type { DiplomaCredentialSubject } from "@university-diplomas/common";
 interface DiplomaCardProps {
   credential: SDK.Domain.Credential;
   compact?: boolean;
+  revoked?: boolean;
+  revocationReason?: string;
+  revocationDate?: string;
 }
 
 function extractClaims(credential: SDK.Domain.Credential): DiplomaCredentialSubject | null {
@@ -156,18 +159,20 @@ function CertificateModal({ claims, onClose }: { claims: DiplomaCredentialSubjec
   );
 }
 
-export function DiplomaCard({ credential, compact = false }: DiplomaCardProps) {
+export function DiplomaCard({ credential, compact = false, revoked = false, revocationReason, revocationDate }: DiplomaCardProps) {
   const [showModal, setShowModal] = useState(false);
   const claims = extractClaims(credential);
 
   const cardStyle: CSSProperties = {
-    background: compact ? "transparent" : "#fff",
-    border: compact ? "none" : "1px solid #e2e8f0",
+    background: compact ? "transparent" : revoked ? "#fff5f5" : "#fff",
+    border: compact ? "none" : revoked ? "1px solid #fca5a5" : "1px solid #e2e8f0",
     borderRadius: "8px",
     padding: compact ? "0.75rem 1rem" : "1.5rem",
     marginBottom: compact ? 0 : "1rem",
     cursor: compact ? "default" : "pointer",
     transition: "box-shadow 0.15s, border-color 0.15s",
+    position: "relative",
+    opacity: revoked ? 0.75 : 1,
   };
 
   if (!claims) {
@@ -182,16 +187,33 @@ export function DiplomaCard({ credential, compact = false }: DiplomaCardProps) {
     <>
       <div
         style={cardStyle}
-        onClick={() => !compact && setShowModal(true)}
-        onMouseEnter={(e) => { if (!compact) { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 16px rgba(0,0,0,0.1)"; (e.currentTarget as HTMLDivElement).style.borderColor = "#c9a84c"; } }}
-        onMouseLeave={(e) => { if (!compact) { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; (e.currentTarget as HTMLDivElement).style.borderColor = "#e2e8f0"; } }}
+        onClick={() => !compact && !revoked && setShowModal(true)}
+        onMouseEnter={(e) => { if (!compact && !revoked) { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 16px rgba(0,0,0,0.1)"; (e.currentTarget as HTMLDivElement).style.borderColor = "#c9a84c"; } }}
+        onMouseLeave={(e) => { if (!compact && !revoked) { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; (e.currentTarget as HTMLDivElement).style.borderColor = "#e2e8f0"; } }}
       >
         {!compact && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
-            <span style={{ background: "#dbeafe", color: "#1d4ed8", borderRadius: "999px", padding: "2px 10px", fontSize: "0.75rem", fontWeight: 600 }}>
-              ✓ Verified Diploma
-            </span>
-            <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Click to view certificate</span>
+            {revoked ? (
+              <span style={{ background: "#fee2e2", color: "#dc2626", borderRadius: "999px", padding: "2px 10px", fontSize: "0.75rem", fontWeight: 600 }}>
+                ✕ Revoked
+              </span>
+            ) : (
+              <span style={{ background: "#dbeafe", color: "#1d4ed8", borderRadius: "999px", padding: "2px 10px", fontSize: "0.75rem", fontWeight: 600 }}>
+                ✓ Verified Diploma
+              </span>
+            )}
+            {!revoked && <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Click to view certificate</span>}
+          </div>
+        )}
+        {revoked && revocationReason && !compact && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", padding: "8px 12px", marginBottom: "0.75rem", fontSize: "0.8rem" }}>
+            <span style={{ color: "#991b1b", fontWeight: 600 }}>Reason: </span>
+            <span style={{ color: "#7f1d1d" }}>{revocationReason}</span>
+            {revocationDate && (
+              <span style={{ color: "#94a3b8", marginLeft: "8px", fontSize: "0.75rem" }}>
+                — {new Date(revocationDate).toLocaleDateString()}
+              </span>
+            )}
           </div>
         )}
         <div style={{ fontWeight: 700, fontSize: compact ? "0.9rem" : "1.1rem" }}>

@@ -1,6 +1,8 @@
+import { useState, useEffect, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useWalletContext } from "../context/WalletContext.js";
 import { DiplomaCard } from "../components/DiplomaCard.js";
+import { fetchStudentCredentials, confirmRevocation, type IssuedCredentialRecord } from "../services/authApi.js";
 
 const statusColor: Record<string, string> = {
   idle: "#94a3b8",
@@ -18,8 +20,112 @@ const statusLabel: Record<string, string> = {
   error: "Error",
 };
 
+/** Extract degree + graduationDate from an SDK credential.
+ *  Uses the same parsing logic as DiplomaCard.extractClaims to guarantee consistency. */
+function extractClaimsForMatch(cred: unknown): { degree?: string; graduationDate?: string } {
+  try {
+    const c = cred as Record<string, unknown>;
+
+    let raw: unknown =
+      c["claims"] ??
+      c["credentialSubject"] ??
+      (c["vc"] as Record<string, unknown> | undefined)?.["credentialSubject"] ??
+      (c["payload"] as Record<string, unknown> | undefined)?.["vc"]?.["credentialSubject" as never];
+
+    if (!raw) return {};
+
+    if (Array.isArray(raw)) {
+      if (raw.length === 0) return {};
+      const first = raw[0] as Record<string, unknown>;
+      if (first && typeof first === "object" && "name" in first && "value" in first) {
+        // [{name,value}…] format — convert to plain object
+        const obj: Record<string, unknown> = {};
+        for (const claim of raw as Array<{ name: string; value: unknown }>) {
+          if (claim?.name) obj[claim.name] = claim.value;
+        }
+        raw = obj;
+      } else {
+        raw = first;
+      }
+    }
+
+    const obj = raw as Record<string, unknown>;
+    return {
+      degree: obj["degree"] as string | undefined,
+      graduationDate: obj["graduationDate"] as string | undefined,
+    };
+  } catch { return {}; }
+}
+
 export function Home() {
-  const { status, credentials, error, connectionError, isConnecting, currentUser, walletDid, retryConnection } = useWalletContext();
+  const { status, credentials, error, connectionError, isConnecting, currentUser, token, walletDid, retryConnection } = useWalletContext();
+  const [issuedRecords, setIssuedRecords] = useState<IssuedCredentialRecord[]>([]);
+  const [tab, setTab] = useState<"active" | "revoked">("active");
+
+  const refreshRecords = useCallback(async () => {
+    if (!currentUser || !token) return;
+    try {
+      const records = await fetchStudentCredentials(currentUser.id, token);
+      setIssuedRecords(records);
+
+      // Auto-confirm any pending revocations so the issuer portal can see them confirmed
+      const pendingUnconfirmed = records.filter(
+        (r) => r.revocationPendingAt && !r.revocationConfirmedAt
+      );
+      for (const rec of pendingUnconfirmed) {
+        await confirmRevocation(currentUser.id, rec.credentialRecordId, token);
+      }
+      // Refresh again if we confirmed anything to get updated revoked:true state
+      if (pendingUnconfirmed.length > 0) {
+        const updated = await fetchStudentCredentials(currentUser.id, token);
+        setIssuedRecords(updated);
+      }
+    } catch { /* silently ignore */ }
+  }, [currentUser, token]);
+
+  // Poll every 10 s so the wallet picks up revocations even when it's already open.
+  useEffect(() => {
+    void refreshRecords();
+    const id = setInterval(() => { void refreshRecords(); }, 10_000);
+    return () => clearInterval(id);
+  }, [refreshRecords]);
+
+  // Deduplicate Pluto credentials by (degree, graduationDate).
+  // Previous duplicate issuances can leave multiple copies in Pluto for the same
+  // credential — keep only one per pair (the last one, i.e. the most recent).
+  const seenKeys = new Set<string>();
+  const deduped = [...credentials].reverse().filter((c) => {
+    const { degree, graduationDate } = extractClaimsForMatch(c);
+    if (!degree || !graduationDate) return true;
+    const key = `${degree}||${graduationDate}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  }).reverse();
+
+  // Build a set of (degree||graduationDate) pairs that are revoked/pending per server records.
+  // This drives the tab split — server is the source of truth, not Pluto parsing.
+  const revokedByServer = new Set(
+    issuedRecords
+      .filter((r) => r.revoked || !!r.revocationPendingAt)
+      .map((r) => `${r.degree}||${r.graduationDate}`)
+  );
+
+  const activeCreds = deduped.filter((c) => {
+    const { degree, graduationDate } = extractClaimsForMatch(c);
+    // If we can read the claims and the server says it's revoked → hide from active
+    if (degree && graduationDate && revokedByServer.has(`${degree}||${graduationDate}`)) {
+      return false;
+    }
+    // If we can't read claims at all, keep in active (don't hide unknown credentials)
+    return true;
+  });
+
+  const revokedCreds = deduped.filter((c) => {
+    const { degree, graduationDate } = extractClaimsForMatch(c);
+    if (!degree || !graduationDate) return false;
+    return revokedByServer.has(`${degree}||${graduationDate}`);
+  });
 
   return (
     <>
@@ -99,16 +205,94 @@ export function Home() {
         </div>
       )}
 
-      {/* Diplomas */}
-      {status === "ready" && credentials.length === 0 && (
-        <div style={{ textAlign: "center", padding: "3rem", color: "#94a3b8" }}>
-          No diplomas yet. Your issuer will send you one when you're graduated.
-        </div>
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: "2px", marginBottom: "1.25rem", borderBottom: "2px solid #e2e8f0" }}>
+        <button
+          onClick={() => setTab("active")}
+          style={{
+            padding: "8px 20px", border: "none", background: "none", cursor: "pointer",
+            fontSize: "0.875rem", fontWeight: 600,
+            color: tab === "active" ? "#0f3460" : "#94a3b8",
+            borderBottom: tab === "active" ? "2px solid #0f3460" : "2px solid transparent",
+            marginBottom: "-2px",
+          }}
+        >
+          Verified Diplomas
+          {activeCreds.length > 0 && (
+            <span style={{ marginLeft: "6px", background: "#dbeafe", color: "#1d4ed8", borderRadius: "999px", padding: "1px 7px", fontSize: "0.7rem" }}>
+              {activeCreds.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setTab("revoked")}
+          style={{
+            padding: "8px 20px", border: "none", background: "none", cursor: "pointer",
+            fontSize: "0.875rem", fontWeight: 600,
+            color: tab === "revoked" ? "#dc2626" : "#94a3b8",
+            borderBottom: tab === "revoked" ? "2px solid #dc2626" : "2px solid transparent",
+            marginBottom: "-2px",
+          }}
+        >
+          Revoked
+          {revokedCreds.length > 0 && (
+            <span style={{ marginLeft: "6px", background: "#fee2e2", color: "#dc2626", borderRadius: "999px", padding: "1px 7px", fontSize: "0.7rem" }}>
+              {revokedCreds.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Active tab */}
+      {tab === "active" && (
+        <>
+          {status === "ready" && activeCreds.length === 0 && (
+            <div style={{ textAlign: "center", padding: "3rem", color: "#94a3b8" }}>
+              No active diplomas yet. Your issuer will send you one when you&apos;re graduated.
+            </div>
+          )}
+          {activeCreds.map((cred, i) => (
+            <DiplomaCard key={i} credential={cred} />
+          ))}
+        </>
       )}
 
-      {credentials.map((cred, i) => (
-        <DiplomaCard key={i} credential={cred} />
-      ))}
+      {/* Revoked tab */}
+      {tab === "revoked" && (
+        <>
+          {revokedCreds.length === 0 && (
+            <div style={{ textAlign: "center", padding: "3rem", color: "#94a3b8" }}>
+              No revoked diplomas.
+            </div>
+          )}
+          {[...revokedCreds]
+            .sort((a, b) => {
+              const { degree: da, graduationDate: ga } = extractClaimsForMatch(a);
+              const { degree: db, graduationDate: gb } = extractClaimsForMatch(b);
+              const recA = issuedRecords.find((r) => r.degree === da && r.graduationDate === ga && (r.revoked || !!r.revocationPendingAt));
+              const recB = issuedRecords.find((r) => r.degree === db && r.graduationDate === gb && (r.revoked || !!r.revocationPendingAt));
+              const tA = new Date(recA?.revocationConfirmedAt ?? recA?.revocationPendingAt ?? 0).getTime();
+              const tB = new Date(recB?.revocationConfirmedAt ?? recB?.revocationPendingAt ?? 0).getTime();
+              return tB - tA;
+            })
+            .map((cred, i) => {
+              const { degree, graduationDate } = extractClaimsForMatch(cred);
+              const rec = issuedRecords.find(
+                (r) => r.degree === degree && r.graduationDate === graduationDate &&
+                       (r.revoked || !!r.revocationPendingAt)
+              );
+              return (
+                <DiplomaCard
+                  key={i}
+                  credential={cred}
+                  revoked
+                  revocationReason={rec?.revocationReason}
+                  revocationDate={rec?.revocationConfirmedAt ?? rec?.revocationPendingAt}
+                />
+              );
+            })}
+        </>
+      )}
     </>
   );
 }
