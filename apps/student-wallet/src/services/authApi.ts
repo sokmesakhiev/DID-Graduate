@@ -38,6 +38,42 @@ export async function login(
   return data as { token: string; student: StudentUser };
 }
 
+export interface IssuedCredentialRecord {
+  credentialRecordId: string;
+  degree: string;
+  graduationDate: string;
+  gpa?: number;
+  issuedAt: string;
+  revoked: boolean;
+  revocationPendingAt?: string;
+  revocationConfirmedAt?: string;
+  revocationReason?: string;
+}
+
+/** Fetch the list of issued credentials for this student (includes revocation status). */
+export async function fetchStudentCredentials(
+  studentId: string,
+  token: string
+): Promise<IssuedCredentialRecord[]> {
+  const res = await fetch(`${API_BASE}/api/students/${studentId}/credentials`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  return res.json() as Promise<IssuedCredentialRecord[]>;
+}
+
+/** Confirm to the issuer that this student's wallet has processed the revocation. */
+export async function confirmRevocation(
+  studentId: string,
+  recordId: string,
+  token: string
+): Promise<void> {
+  await fetch(`${API_BASE}/api/students/${studentId}/credentials/${recordId}/revocation-confirmed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  }).catch(() => { /* non-fatal — issuer can retry */ });
+}
+
 /** Tell the issuer-api which DIDComm connection belongs to this student. */
 export async function saveConnectionId(
   studentId: string,

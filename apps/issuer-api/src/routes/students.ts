@@ -12,6 +12,11 @@ import {
   updateWalletData,
   updateWalletSeed,
   updateWalletDid,
+  addIssuedCredential,
+  getIssuedCredentials,
+  markCredentialRevoked,
+  markRevocationPending,
+  confirmRevocation,
   type PendingDiploma,
 } from "../services/studentStore.js";
 
@@ -63,11 +68,11 @@ async function waitForConnectionReady(
   return false;
 }
 
-/** Issue a pending diploma via the Cloud Agent. Returns true on success. */
+/** Issue a pending diploma via the Cloud Agent. Returns the recordId on success, false on failure. */
 async function issueCredentialNow(
   diploma: PendingDiploma,
   connectionId: string
-): Promise<boolean> {
+): Promise<string | false> {
   try {
     const claims: Record<string, unknown> = {
       studentName: diploma.studentName,
@@ -92,13 +97,28 @@ async function issueCredentialNow(
         schemaId: diploma.schemaId,
         credentialFormat: "JWT",
         automaticIssuance: true,
+        credentialStatus: { statusPurpose: "Revocation" },
       }),
     });
     if (!res.ok) {
       console.error(`[auto-issue] Cloud Agent returned ${res.status} for pending diploma ${diploma.id}`);
       return false;
     }
-    return true;
+    const data = await res.json() as { recordId?: string };
+    if (data.recordId) {
+      try {
+        addIssuedCredential(diploma.studentId, {
+          credentialRecordId: data.recordId,
+          degree: diploma.degree,
+          graduationDate: diploma.graduationDate,
+          issuedAt: new Date().toISOString(),
+          revoked: false,
+        });
+      } catch (e) {
+        console.warn("[auto-issue] could not save issued credential record:", e);
+      }
+    }
+    return data.recordId ?? "unknown";
   } catch (e) {
     console.error(`[auto-issue] failed for pending diploma ${diploma.id}:`, e);
     return false;
@@ -186,8 +206,8 @@ studentsRouter.post("/:id/diplomas/deliver", async (req, res) => {
         if (!stillPending) continue;
         issuingInProgress.add(diploma.id);
         try {
-          const ok = await issueCredentialNow(diploma, student.connectionId!);
-          if (ok) {
+          const result = await issueCredentialNow(diploma, student.connectionId!);
+          if (result) {
             removePendingDiploma(diploma.id);
             console.log(`[deliver] issued diploma ${diploma.id} to student ${req.params.id}`);
           }
@@ -346,8 +366,8 @@ studentsRouter.patch("/:id/connection", async (req, res) => {
         if (!stillPending) continue;
         issuingInProgress.add(diploma.id);
         try {
-          const ok = await issueCredentialNow(diploma, connectionId);
-          if (ok) {
+          const result = await issueCredentialNow(diploma, connectionId);
+          if (result) {
             removePendingDiploma(diploma.id);
             console.log(`[auto-issue] issued pending diploma ${diploma.id} to student ${studentId}`);
           } else {
@@ -409,5 +429,102 @@ studentsRouter.patch("/:id/wallet-seed", (req, res) => {
     return res.json({ ok: true });
   } catch {
     return res.status(404).json({ error: "Student not found" });
+  }
+});
+
+// ── Issued Credentials & Revocation ──────────────────────────────────────────
+
+// GET /api/students/:id/credentials
+// Returns all issued credentials for a student (issuer-portal use, no student auth required).
+studentsRouter.get("/:id/credentials", (req, res) => {
+  const creds = getIssuedCredentials(req.params.id);
+  return res.json(creds);
+});
+
+// POST /api/students/:id/credentials
+// Saves a credential record after direct issuance from the issuer portal.
+studentsRouter.post("/:id/credentials", (req, res) => {
+  const { credentialRecordId, degree, graduationDate, gpa } = (req.body ?? {}) as {
+    credentialRecordId?: string;
+    degree?: string;
+    graduationDate?: string;
+    gpa?: number;
+  };
+  if (!credentialRecordId || !degree || !graduationDate) {
+    return res.status(400).json({ error: "credentialRecordId, degree, and graduationDate are required" });
+  }
+  try {
+    addIssuedCredential(req.params.id, {
+      credentialRecordId,
+      degree,
+      graduationDate,
+      ...(gpa !== undefined ? { gpa } : {}),
+      issuedAt: new Date().toISOString(),
+      revoked: false,
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(404).json({ error: e instanceof Error ? e.message : "Failed to save credential" });
+  }
+});
+
+// POST /api/students/:id/credentials/:recordId/revoke
+// Initiates revocation: sets the status list bit on the agent then marks pending locally.
+// The issuer portal polls for revoked:true, which is only set after the student wallet confirms.
+studentsRouter.post("/:id/credentials/:recordId/revoke", async (req, res) => {
+  const { id, recordId } = req.params;
+  const { reason } = (req.body ?? {}) as { reason?: string };
+
+  // Idempotency: if already fully revoked, skip the agent call
+  const existing = getIssuedCredentials(id).find((c) => c.credentialRecordId === recordId);
+  if (existing?.revoked) {
+    return res.json({ ok: true, status: "confirmed", alreadyRevoked: true });
+  }
+  // If pending but not yet confirmed, still wait
+  if (existing?.revocationPendingAt) {
+    return res.json({ ok: true, status: "pending" });
+  }
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (ISSUER_API_KEY) headers["apikey"] = ISSUER_API_KEY;
+
+  let agentRes: Response;
+  try {
+    agentRes = await fetch(
+      `${ISSUER_AGENT_URL}/credential-status/revoke-credential/${recordId}`,
+      { method: "PATCH", headers }
+    );
+  } catch (e) {
+    console.error("[revoke] network error calling agent:", e);
+    return res.status(502).json({ error: "Failed to reach Cloud Agent" });
+  }
+
+  if (!agentRes.ok) {
+    const text = await agentRes.text().catch(() => "");
+    console.error(`[revoke] agent returned ${agentRes.status}: ${text}`);
+    return res.status(agentRes.status).json({ error: `Agent error: ${agentRes.status}`, detail: text });
+  }
+
+  try {
+    markRevocationPending(id, recordId, reason);
+  } catch (e) {
+    console.warn("[revoke] local markRevocationPending failed:", e);
+  }
+
+  return res.json({ ok: true, status: "pending" });
+});
+
+// POST /api/students/:id/credentials/:recordId/revocation-confirmed
+// Called by the student wallet once it has stored the revocation locally.
+studentsRouter.post("/:id/credentials/:recordId/revocation-confirmed", (req, res) => {
+  const payload = verifyToken(req.headers.authorization);
+  if (!payload || payload.sub !== req.params.id) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    confirmRevocation(req.params.id, req.params.recordId);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(404).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });

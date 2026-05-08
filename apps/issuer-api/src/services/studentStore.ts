@@ -3,6 +3,22 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import bcrypt from "bcryptjs";
 
+export interface IssuedCredential {
+  credentialRecordId: string;
+  degree: string;
+  graduationDate: string;
+  gpa?: number;
+  issuedAt: string;
+  /** true only after the student wallet has acknowledged the revocation */
+  revoked: boolean;
+  /** set when revocation is initiated on the agent — wallet confirmation pending */
+  revocationPendingAt?: string;
+  /** set when the student wallet confirms it has processed the revocation */
+  revocationConfirmedAt?: string;
+  /** human-readable reason provided by the issuer */
+  revocationReason?: string;
+}
+
 export interface Student {
   id: string;
   email: string;
@@ -17,6 +33,7 @@ export interface Student {
   walletSeed?: number[];
   walletBackup?: unknown;
   walletDid?: string;
+  issuedCredentials?: IssuedCredential[];
 }
 
 const DATA_DIR = resolve(__dirname, "../../data");
@@ -174,4 +191,60 @@ export function getPendingDiplomas(studentId: string): PendingDiploma[] {
 
 export function removePendingDiploma(id: string): void {
   savePending(loadPending().filter((d) => d.id !== id));
+}
+
+// ── Issued Credentials ────────────────────────────────────────────────────────
+// Credentials that have been issued via the Cloud Agent, tracked for revocation.
+
+export function getIssuedCredentials(studentId: string): IssuedCredential[] {
+  const student = findById(studentId);
+  return student?.issuedCredentials ?? [];
+}
+
+export function addIssuedCredential(studentId: string, cred: IssuedCredential): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  if (!student.issuedCredentials) student.issuedCredentials = [];
+  student.issuedCredentials.push(cred);
+  saveStudents(students);
+}
+
+export function markCredentialRevoked(studentId: string, credentialRecordId: string): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.revoked = true;
+  saveStudents(students);
+}
+
+/** Mark a credential as pending revocation (agent bit set, waiting for wallet ack). */
+export function markRevocationPending(
+  studentId: string,
+  credentialRecordId: string,
+  reason?: string
+): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.revocationPendingAt = new Date().toISOString();
+  if (reason) cred.revocationReason = reason;
+  // revoked stays false until wallet confirms
+  saveStudents(students);
+}
+
+/** Called when the student wallet signals it has processed the revocation. */
+export function confirmRevocation(studentId: string, credentialRecordId: string): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.revoked = true;
+  cred.revocationConfirmedAt = new Date().toISOString();
+  saveStudents(students);
 }

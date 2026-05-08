@@ -1,7 +1,6 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import { Home } from "./pages/Home.js";
-import { Claim } from "./pages/Claim.js";
 import { Present } from "./pages/Present.js";
 import { WalletProvider } from "./context/WalletContext.js";
 import { LoginPage } from "./pages/LoginPage.js";
@@ -84,7 +83,6 @@ export default function App() {
           🎓 Diploma Wallet
         </span>
         <NavLink to="/" style={linkStyle} end>My Diplomas</NavLink>
-        <NavLink to="/claim" style={linkStyle}>Claim Diploma</NavLink>
         <NavLink to="/present" style={linkStyle}>Present Diploma</NavLink>
         <span style={{ marginLeft: "auto", fontSize: "0.875rem", color: "#a0aec0" }}>
           {currentUser.name}
@@ -99,7 +97,6 @@ export default function App() {
       <main style={{ padding: "2rem", maxWidth: "800px", margin: "0 auto" }}>
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/claim" element={<Claim />} />
           <Route path="/present" element={<Present />} />
         </Routes>
       </main>

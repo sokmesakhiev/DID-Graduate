@@ -1,7 +1,6 @@
 import type { CSSProperties } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import { Dashboard } from "./pages/Dashboard.js";
-import { IssueDiploma } from "./pages/IssueDiploma.js";
 import { Connections } from "./pages/Connections.js";
 import { Students } from "./pages/Students.js";
 
@@ -38,9 +37,6 @@ export default function App() {
         <NavLink to="/students" style={linkStyle}>
           Students
         </NavLink>
-        <NavLink to="/issue" style={linkStyle}>
-          Issue Diploma
-        </NavLink>
         <NavLink to="/connections" style={linkStyle}>
           Connections
         </NavLink>
@@ -50,7 +46,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/students" element={<Students />} />
-          <Route path="/issue" element={<IssueDiploma />} />
           <Route path="/connections" element={<Connections />} />
         </Routes>
       </main>
