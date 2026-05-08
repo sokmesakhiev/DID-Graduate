@@ -212,7 +212,7 @@ This starts four development servers in parallel. Once they are ready, open thes
 ### 6b. Issue the diploma (Issuer Portal — Students tab)
 
 1. Open **http://localhost:5173** in a browser tab.
-2. Click **Students** in the left sidebar. You should see the student you just registered with a green **Wallet linked** badge.
+2. Click **Students** in the top navigation bar. You should see the student you just registered with a green **Wallet linked** badge.
 3. Click **Issue Diploma** next to their name.
 4. Fill in degree, graduation date, and optional GPA.
 5. Click **Issue Diploma ✓**.
@@ -229,10 +229,11 @@ This starts four development servers in parallel. Once they are ready, open thes
 ### 6d. Verify the diploma (Verifier Portal)
 
 1. Open **http://localhost:5175** in a browser tab.
-2. Click **Start Verification Session**.
-3. Copy the invitation URL shown.
-4. In the Student Wallet, click **Present Credential**, paste the URL, and click **Present**.
-5. The Verifier Portal should show ✅ **Verified** with the diploma fields.
+2. Click **Start Verification Session**. A QR code and invitation URL appear.
+3. In the Student Wallet, click **Present Diploma** in the top navigation bar.
+4. In the Verifier Portal, copy the invitation URL and share it with the student (or the student scans the QR code).
+5. Once the student's wallet connects, a **Proof Request Received** banner appears in the wallet. Select the diploma and click **Send Presentation**.
+6. The Verifier Portal should show ✅ **Verified** with all the diploma fields.
 
 ---
 
@@ -243,6 +244,20 @@ This starts four development servers in parallel. Once they are ready, open thes
 | **Dashboard** | Lists all issued credentials with live status (Active / Revoking / Revoked), filter tabs, search, and Cardano tx hash |
 | **Students** | Lists registered students with avatars and wallet status; issue diplomas directly or queue for offline students; view and revoke credentials per student |
 | **Connections** | Raw DIDComm connection list (debugging) |
+
+## Student Wallet — pages
+
+| Page | What it does |
+|------|-------------|
+| **My Diplomas** | Shows all credentials split into **Verified Diplomas** and **Revoked** tabs; displays wallet status and issuer connection badge; revoked credentials sorted newest-first |
+| **Present Diploma** | Receives incoming proof requests from a verifier; lets the student select a diploma and send a cryptographic presentation |
+
+## Verifier Portal — pages
+
+| Page | What it does |
+|------|-------------|
+| **Verify Diploma** | Starts a verification session (QR code + invitation URL); waits for the student to connect and send a presentation; shows ✅ Verified or ❌ Failed with all credential fields and optional Cardano on-chain confirmation |
+| **History** | Lists all past verification sessions with their results |
 
 ---
 
