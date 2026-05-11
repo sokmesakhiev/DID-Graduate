@@ -17,6 +17,37 @@ export interface IssuedCredential {
   revocationConfirmedAt?: string;
   /** human-readable reason provided by the issuer */
   revocationReason?: string;
+  /** Cardano transaction hash for the on-chain VC hash anchor */
+  cardanoTxHash?: string;
+  /** Preprod/mainnet Cardanoscan URL for the anchor tx */
+  cardanoscanUrl?: string;
+  /** Cardano transaction hash for the on-chain revocation notice */
+  cardanoRevocationTxHash?: string;
+  /** Cardanoscan URL for the revocation tx */
+  cardanoRevocationUrl?: string;
+  /**
+   * Original issuance parameters — stored so we can re-issue if the
+   * DIDComm offer was dropped and the wallet never received it.
+   */
+  issuingDid?: string;
+  schemaId?: string;
+  studentName?: string;
+  studentIdField?: string;
+  universityName?: string;
+  /**
+   * Last known Cloud Agent state for this credential record.
+   * e.g. OfferSent | RequestReceived | CredentialSent | ProblemReportReceived
+   * Populated / refreshed by the delivery-status endpoint.
+   */
+  deliveryState?: string;
+  /** ISO timestamp of the last delivery-state sync */
+  deliveryCheckedAt?: string;
+  /** Set when the student wallet confirms it has stored the credential */
+  walletConfirmedAt?: string;
+  /** Set when the credential is considered undeliverable */
+  failedAt?: string;
+  /** Human-readable reason for delivery failure */
+  failureReason?: string;
 }
 
 export interface Student {
@@ -220,6 +251,41 @@ export function markCredentialRevoked(studentId: string, credentialRecordId: str
   saveStudents(students);
 }
 
+/** Update the cached Cloud Agent delivery state for a credential. */
+export function updateDeliveryState(
+  studentId: string,
+  credentialRecordId: string,
+  deliveryState: string
+): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.deliveryState = deliveryState;
+  cred.deliveryCheckedAt = new Date().toISOString();
+  if (deliveryState === "WalletConfirmed" && !cred.walletConfirmedAt) {
+    cred.walletConfirmedAt = new Date().toISOString();
+  }
+  saveStudents(students);
+}
+
+/** Mark a credential as failed (undeliverable). */
+export function markCredentialFailed(
+  studentId: string,
+  credentialRecordId: string,
+  reason: string
+): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.failedAt = new Date().toISOString();
+  cred.failureReason = reason;
+  saveStudents(students);
+}
+
 /** Mark a credential as pending revocation (agent bit set, waiting for wallet ack). */
 export function markRevocationPending(
   studentId: string,
@@ -234,6 +300,40 @@ export function markRevocationPending(
   cred.revocationPendingAt = new Date().toISOString();
   if (reason) cred.revocationReason = reason;
   // revoked stays false until wallet confirms
+  saveStudents(students);
+}
+
+/** Store the Cardano revocation tx data for an issued credential. */
+export function updateIssuedCredentialRevocationCardano(
+  studentId: string,
+  credentialRecordId: string,
+  txHash: string,
+  cardanoscanUrl: string
+): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.cardanoRevocationTxHash = txHash;
+  cred.cardanoRevocationUrl = cardanoscanUrl;
+  saveStudents(students);
+}
+
+/** Store the Cardano on-chain anchor data for an issued credential. */
+export function updateIssuedCredentialCardano(
+  studentId: string,
+  credentialRecordId: string,
+  cardanoTxHash: string,
+  cardanoscanUrl: string
+): void {
+  const students = loadStudents();
+  const student = students.find((s) => s.id === studentId);
+  if (!student) throw new Error("Student not found");
+  const cred = student.issuedCredentials?.find((c) => c.credentialRecordId === credentialRecordId);
+  if (!cred) throw new Error("Credential not found");
+  cred.cardanoTxHash = cardanoTxHash;
+  cred.cardanoscanUrl = cardanoscanUrl;
   saveStudents(students);
 }
 

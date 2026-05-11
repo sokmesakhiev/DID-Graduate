@@ -267,6 +267,14 @@ export interface IssuedCredential {
   revocationPendingAt?: string;
   revocationConfirmedAt?: string;
   revocationReason?: string;
+  cardanoTxHash?: string;
+  cardanoscanUrl?: string;
+  cardanoRevocationTxHash?: string;
+  cardanoRevocationUrl?: string;
+  deliveryState?: string;
+  deliveryCheckedAt?: string;
+  failedAt?: string;
+  failureReason?: string;
 }
 
 export async function fetchIssuedCredentials(studentId: string): Promise<IssuedCredential[]> {
@@ -277,7 +285,16 @@ export async function fetchIssuedCredentials(studentId: string): Promise<IssuedC
 
 export async function saveIssuedCredential(
   studentId: string,
-  data: { credentialRecordId: string; degree: string; graduationDate: string; gpa?: number }
+  data: {
+    credentialRecordId: string;
+    degree: string;
+    graduationDate: string;
+    gpa?: number;
+    issuingDid?: string;
+    schemaId?: string;
+    studentName?: string;
+    studentIdField?: string;
+  }
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials`, {
     method: "POST",
@@ -288,6 +305,23 @@ export async function saveIssuedCredential(
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error: string }).error ?? `saveIssuedCredential: ${res.status}`);
   }
+}
+
+/** Update the Cardano on-chain anchor data for an already-stored credential. */
+export async function updateCredentialCardano(
+  studentId: string,
+  recordId: string,
+  cardanoTxHash: string,
+  cardanoscanUrl: string
+): Promise<void> {
+  await fetch(
+    `${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials/${encodeURIComponent(recordId)}/cardano`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardanoTxHash, cardanoscanUrl }),
+    }
+  );
 }
 
 export async function revokeCredential(
@@ -305,6 +339,37 @@ export async function revokeCredential(
   }
   const data = await res.json() as { status?: string };
   return { status: (data.status ?? "pending") as "pending" | "confirmed" };
+}
+
+/** Query Cloud Agent for real delivery state. Returns updated credential fields. */
+export async function checkCredentialDelivery(
+  studentId: string,
+  recordId: string
+): Promise<{ state: string; failedAt?: string; failureReason?: string }> {
+  const res = await fetch(
+    `${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials/${encodeURIComponent(recordId)}/delivery-status`
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error: string }).error ?? `checkCredentialDelivery: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Manually mark a credential as failed/undeliverable. */
+export async function markCredentialFailed(
+  studentId: string,
+  recordId: string,
+  reason?: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials/${encodeURIComponent(recordId)}/mark-failed`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error: string }).error ?? `markCredentialFailed: ${res.status}`);
+  }
 }
 
 export async function queueDiploma(

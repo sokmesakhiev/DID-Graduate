@@ -17,8 +17,14 @@ import {
   markCredentialRevoked,
   markRevocationPending,
   confirmRevocation,
+  updateIssuedCredentialCardano,
+  updateIssuedCredentialRevocationCardano,
+  updateDeliveryState,
+  markCredentialFailed,
   type PendingDiploma,
 } from "../services/studentStore.js";
+import { hashVc, writeRevocationToCardano, writeVcHashToCardano } from "../services/cardanoWriter.js";
+import type { CardanoVcHashPayload } from "@university-diplomas/common";
 
 export const studentsRouter = Router();
 
@@ -111,8 +117,14 @@ async function issueCredentialNow(
           credentialRecordId: data.recordId,
           degree: diploma.degree,
           graduationDate: diploma.graduationDate,
+          ...(diploma.gpa !== undefined ? { gpa: diploma.gpa } : {}),
           issuedAt: new Date().toISOString(),
           revoked: false,
+          issuingDid: diploma.issuingDid,
+          schemaId: diploma.schemaId,
+          studentName: diploma.studentName,
+          studentIdField: diploma.studentIdField,
+          universityName: diploma.universityName,
         });
       } catch (e) {
         console.warn("[auto-issue] could not save issued credential record:", e);
@@ -173,6 +185,7 @@ studentsRouter.get("/:id", (req, res) => {
 
 // POST /api/students/:id/diplomas/deliver — called by student wallet at startup to
 // trigger issuance of any pending diplomas (handles already-connected students).
+// Also re-issues credentials that were stuck in OfferSent when the wallet was offline.
 studentsRouter.post("/:id/diplomas/deliver", async (req, res) => {
   const payload = verifyToken(req.headers.authorization);
   if (!payload || payload.sub !== req.params.id) {
@@ -184,9 +197,22 @@ studentsRouter.post("/:id/diplomas/deliver", async (req, res) => {
   if (!student.connectionId) return res.json({ ok: true, pendingCount: 0, note: "no connection yet" });
 
   const pending = getPendingDiplomas(req.params.id);
-  res.json({ ok: true, pendingCount: pending.length });
 
-  if (pending.length === 0) return;
+  // Find credentials stuck in OfferSent/OfferPending that have enough data to re-issue
+  // and haven't been explicitly failed yet. These are credentials the wallet never received
+  // because it was offline when the offer was originally sent.
+  const stuckCreds = getIssuedCredentials(req.params.id).filter(
+    (c) =>
+      !c.revoked &&
+      !c.failedAt &&
+      (c.deliveryState === "OfferSent" || c.deliveryState === "OfferPending") &&
+      c.issuingDid &&
+      c.schemaId
+  );
+
+  res.json({ ok: true, pendingCount: pending.length, stuckCount: stuckCreds.length });
+
+  if (pending.length === 0 && stuckCreds.length === 0) return;
 
   void (async () => {
     try {
@@ -196,12 +222,13 @@ studentsRouter.post("/:id/diplomas/deliver", async (req, res) => {
         console.warn(`[deliver] connection ${student.connectionId} not ready`);
         return;
       }
+
+      // Issue pending (queued) diplomas
       for (const diploma of pending) {
         if (issuingInProgress.has(diploma.id)) {
           console.log(`[deliver] diploma ${diploma.id} already being issued — skipping`);
           continue;
         }
-        // Re-check the store: another job may have already issued this diploma
         const stillPending = getPendingDiplomas(req.params.id).find((d) => d.id === diploma.id);
         if (!stillPending) continue;
         issuingInProgress.add(diploma.id);
@@ -213,6 +240,37 @@ studentsRouter.post("/:id/diplomas/deliver", async (req, res) => {
           }
         } finally {
           issuingInProgress.delete(diploma.id);
+        }
+      }
+
+      // Re-issue stuck credentials: create a fresh credential offer for each one.
+      // The old offer (for a previous connection or dropped by the mediator) is
+      // replaced — we save the new recordId and mark deliveryState as re-sent.
+      for (const stuck of stuckCreds) {
+        const key = `reissue-${stuck.credentialRecordId}`;
+        if (issuingInProgress.has(key)) continue;
+        issuingInProgress.add(key);
+        try {
+          const syntheticDiploma: PendingDiploma = {
+            id: key,
+            studentId: req.params.id,
+            studentName: stuck.studentName ?? student.name,
+            studentIdField: stuck.studentIdField ?? "",
+            degree: stuck.degree,
+            graduationDate: stuck.graduationDate,
+            gpa: stuck.gpa,
+            issuingDid: stuck.issuingDid!,
+            schemaId: stuck.schemaId!,
+            universityName: stuck.universityName ?? UNIVERSITY_NAME,
+            createdAt: stuck.issuedAt,
+          };
+          const newRecordId = await issueCredentialNow(syntheticDiploma, student.connectionId!);
+          if (newRecordId && newRecordId !== "unknown") {
+            // Remove the old stuck record and the new one is already saved by issueCredentialNow
+            console.log(`[deliver] re-issued stuck credential ${stuck.credentialRecordId} → new recordId ${newRecordId} for student ${req.params.id}`);
+          }
+        } finally {
+          issuingInProgress.delete(key);
         }
       }
     } catch (e) {
@@ -444,11 +502,15 @@ studentsRouter.get("/:id/credentials", (req, res) => {
 // POST /api/students/:id/credentials
 // Saves a credential record after direct issuance from the issuer portal.
 studentsRouter.post("/:id/credentials", (req, res) => {
-  const { credentialRecordId, degree, graduationDate, gpa } = (req.body ?? {}) as {
+  const { credentialRecordId, degree, graduationDate, gpa, issuingDid, schemaId, studentName, studentIdField } = (req.body ?? {}) as {
     credentialRecordId?: string;
     degree?: string;
     graduationDate?: string;
     gpa?: number;
+    issuingDid?: string;
+    schemaId?: string;
+    studentName?: string;
+    studentIdField?: string;
   };
   if (!credentialRecordId || !degree || !graduationDate) {
     return res.status(400).json({ error: "credentialRecordId, degree, and graduationDate are required" });
@@ -459,12 +521,34 @@ studentsRouter.post("/:id/credentials", (req, res) => {
       degree,
       graduationDate,
       ...(gpa !== undefined ? { gpa } : {}),
+      ...(issuingDid ? { issuingDid } : {}),
+      ...(schemaId ? { schemaId } : {}),
+      ...(studentName ? { studentName } : {}),
+      ...(studentIdField ? { studentIdField } : {}),
       issuedAt: new Date().toISOString(),
       revoked: false,
     });
     return res.json({ ok: true });
   } catch (e) {
     return res.status(404).json({ error: e instanceof Error ? e.message : "Failed to save credential" });
+  }
+});
+
+// PATCH /api/students/:id/credentials/:recordId/cardano
+// Stores the Cardano on-chain anchor data (txHash + Cardanoscan URL) for a credential.
+studentsRouter.patch("/:id/credentials/:recordId/cardano", (req, res) => {
+  const { cardanoTxHash, cardanoscanUrl } = (req.body ?? {}) as {
+    cardanoTxHash?: string;
+    cardanoscanUrl?: string;
+  };
+  if (!cardanoTxHash || !cardanoscanUrl) {
+    return res.status(400).json({ error: "cardanoTxHash and cardanoscanUrl are required" });
+  }
+  try {
+    updateIssuedCredentialCardano(req.params.id, req.params.recordId, cardanoTxHash, cardanoscanUrl);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(404).json({ error: e instanceof Error ? e.message : "Failed to update credential" });
   }
 });
 
@@ -516,15 +600,166 @@ studentsRouter.post("/:id/credentials/:recordId/revoke", async (req, res) => {
 
 // POST /api/students/:id/credentials/:recordId/revocation-confirmed
 // Called by the student wallet once it has stored the revocation locally.
+// At this point we know the wallet has the revocation — anchor it on Cardano.
 studentsRouter.post("/:id/credentials/:recordId/revocation-confirmed", (req, res) => {
   const payload = verifyToken(req.headers.authorization);
   if (!payload || payload.sub !== req.params.id) {
     return res.status(403).json({ error: "Unauthorized" });
   }
+  const { id, recordId } = req.params;
   try {
-    confirmRevocation(req.params.id, req.params.recordId);
-    return res.json({ ok: true });
+    confirmRevocation(id, recordId);
   } catch (e) {
     return res.status(404).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+
+  // Wallet confirmed it received the revocation — now anchor to Cardano
+  const cred = getIssuedCredentials(id).find((c) => c.credentialRecordId === recordId);
+  if (cred?.cardanoTxHash) {
+    void (async () => {
+      try {
+        const result = await writeRevocationToCardano({
+          vcHash: cred.cardanoTxHash!,
+          vcId: `urn:credential:${recordId}`,
+          universityDid: process.env.VITE_UNIVERSITY_DID ?? "unknown",
+          studentId: id,
+          reason: cred.revocationReason ?? "",
+        });
+        updateIssuedCredentialRevocationCardano(id, recordId, result.txHash, result.cardanoscanUrl);
+        console.log(`[revocation-confirmed] Cardano revocation tx: ${result.txHash}`);
+      } catch (e) {
+        console.warn("[revocation-confirmed] Cardano revocation write failed (non-fatal):", e);
+      }
+    })();
+  }
+
+  return res.json({ ok: true });
+});
+
+// POST /api/students/:id/credentials/:recordId/wallet-confirmed
+// Called by the student wallet after it has successfully stored the credential in Pluto.
+// This is the authoritative signal that the student has the VC — trigger Cardano anchor here.
+studentsRouter.post("/:id/credentials/:recordId/wallet-confirmed", (req, res) => {
+  const payload = verifyToken(req.headers.authorization);
+  if (!payload || payload.sub !== req.params.id) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  const { id, recordId } = req.params;
+
+  const cred = getIssuedCredentials(id).find((c) => c.credentialRecordId === recordId);
+  if (!cred) return res.status(404).json({ error: "Credential not found" });
+
+  // Mark wallet-confirmed in the store
+  updateDeliveryState(id, recordId, "WalletConfirmed");
+
+  // Fire-and-forget: write issuance anchor to Cardano now that we know the wallet has it
+  console.log(`[wallet-confirmed] cred found: cardanoTxHash=${cred.cardanoTxHash ?? "empty"}, issuingDid=${cred.issuingDid ?? "MISSING"}`);
+  if (!cred.cardanoTxHash && cred.issuingDid) {
+    console.log(`[wallet-confirmed] Triggering Cardano anchor for ${recordId}`);
+    void (async () => {
+      try {
+        const vcObj = {
+          id: `urn:credential:${recordId}`,
+          issuer: cred.issuingDid,
+          issuanceDate: cred.issuedAt,
+          credentialSubject: {
+            studentName: cred.studentName ?? "",
+            studentId: cred.studentIdField ?? "",
+            degree: cred.degree,
+            graduationDate: cred.graduationDate,
+            universityDid: cred.issuingDid,
+            ...(cred.gpa !== undefined ? { gpa: cred.gpa } : {}),
+          },
+        };
+        const vcPayload: CardanoVcHashPayload = {
+          label: 674,
+          vcId: vcObj.id,
+          vcHash: hashVc(vcObj),
+          universityDid: cred.issuingDid ?? "",
+          studentId: cred.studentIdField ?? "",
+          issuedAt: cred.issuedAt,
+        };
+        const result = await writeVcHashToCardano(vcPayload);
+        updateIssuedCredentialCardano(id, recordId, result.txHash, result.cardanoscanUrl);
+        console.log(`[wallet-confirmed] Cardano issuance tx: ${result.txHash} for ${recordId}`);
+      } catch (e) {
+        console.warn("[wallet-confirmed] Cardano write failed (non-fatal):", e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
+
+  return res.json({ ok: true });
+});
+
+// GET /api/students/:id/credentials/:recordId/delivery-status
+// Queries the Cloud Agent for the real credential record state and persists it.
+// Also auto-marks as failed if the state is stuck or a problem report was received.
+studentsRouter.get("/:id/credentials/:recordId/delivery-status", async (req, res) => {
+  const { id, recordId } = req.params;
+
+  const existing = getIssuedCredentials(id).find((c) => c.credentialRecordId === recordId);
+  if (!existing) return res.status(404).json({ error: "Credential not found" });
+
+  try {
+    const headers: Record<string, string> = {};
+    if (ISSUER_API_KEY) headers["apikey"] = ISSUER_API_KEY;
+
+    const agentRes = await fetch(
+      `${ISSUER_AGENT_URL}/issue-credentials/records/${recordId}`,
+      { headers }
+    );
+
+    if (!agentRes.ok) {
+      return res.status(502).json({ error: `Agent returned ${agentRes.status}` });
+    }
+
+    const record = await agentRes.json() as { protocolState?: string; updatedAt?: string };
+    const state = record.protocolState ?? "Unknown";
+
+    // Persist the latest state
+    updateDeliveryState(id, recordId, state);
+
+    // Auto-detect failure conditions:
+    // 1. Problem report received from the holder
+    // 2. Offer was sent but never accepted after 48 hours
+    let autoFailed = false;
+    let failureReason = "";
+
+    if (state === "ProblemReportReceived") {
+      autoFailed = true;
+      failureReason = "Holder sent a problem report — credential was rejected";
+    } else if (
+      (state === "OfferSent" || state === "OfferPending") &&
+      !existing.failedAt
+    ) {
+      const issuedAt = new Date(existing.issuedAt).getTime();
+      const hoursElapsed = (Date.now() - issuedAt) / 1000 / 3600;
+      if (hoursElapsed >= 48) {
+        autoFailed = true;
+        failureReason = `Offer was sent ${Math.floor(hoursElapsed)}h ago but was never accepted by the student wallet`;
+      }
+    }
+
+    if (autoFailed && !existing.failedAt) {
+      markCredentialFailed(id, recordId, failureReason);
+    }
+
+    const refreshed = getIssuedCredentials(id).find((c) => c.credentialRecordId === recordId);
+    return res.json({ state, failedAt: refreshed?.failedAt, failureReason: refreshed?.failureReason });
+  } catch (e) {
+    return res.status(500).json({ error: e instanceof Error ? e.message : "Delivery status check failed" });
+  }
+});
+
+// POST /api/students/:id/credentials/:recordId/mark-failed
+// Manually mark a credential as failed/undeliverable by the issuer.
+studentsRouter.post("/:id/credentials/:recordId/mark-failed", (req, res) => {
+  const { id, recordId } = req.params;
+  const { reason } = (req.body ?? {}) as { reason?: string };
+  try {
+    markCredentialFailed(id, recordId, reason ?? "Manually marked as failed by issuer");
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(404).json({ error: e instanceof Error ? e.message : "Credential not found" });
   }
 });

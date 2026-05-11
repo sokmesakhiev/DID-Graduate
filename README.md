@@ -21,11 +21,14 @@ A **DID** (Decentralised Identifier) is like an email address that nobody can fa
 ### Happy path — wallet is open
 
 1. Admin clicks **Issue Diploma** in the Students tab and submits the form.
-2. The Issuer Portal calls the Issuer API (`POST /api/agent/issue-credentials/credential-offers`) with the student's `connectionId`, the issuing DID, schema ID, and claims.
+2. The Issuer Portal calls the Issuer API (`POST /api/agent/issue-credentials/credential-offers`) with the student's `connectionId`, the issuing DID, schema ID, and claims. It also calls `POST /api/students/:id/credentials` to persist the credential record including the `issuingDid`.
 3. The Cloud Agent creates the offer and pushes it over DIDComm through the mediator to the student's wallet.
 4. The student wallet (Hyperledger Identus Edge Agent SDK running in the browser) auto-accepts the offer and stores the signed JWT credential in Pluto (the in-browser credential store).
-5. The Issuer API polls the credential record until `protocolState === "CredentialSent"`, then optionally writes the JWT hash to Cardano.
-6. The credential appears in the student's **My Diplomas → Verified Diplomas** tab.
+5. The wallet fires `POST /api/students/:id/credentials/:recordId/wallet-confirmed` to notify the Issuer API that it has received the credential. This is the trigger for the Cardano anchor.
+6. The Issuer API computes a SHA-256 hash of the credential, submits a Cardano preprod transaction with the hash in metadata (label 674), and stores the `cardanoTxHash` and `cardanoscanUrl` on the credential record.
+7. The credential appears in the student's **My Diplomas → Verified Diplomas** tab with a **⛓ On-chain anchor** link pointing to Cardanoscan. This takes approximately 30 seconds from delivery.
+
+> **Startup catch-up**: On every wallet login, the wallet cross-references its locally stored credentials (Pluto) against the server's records. Any credential that has an `issuingDid` but no `cardanoTxHash` yet automatically re-triggers the `wallet-confirmed` callback. This ensures anchoring completes even if the wallet was offline when the credential first arrived.
 
 ### Offline student — diploma queued
 
@@ -61,9 +64,9 @@ Revocation is a **two-phase** process to keep the issuer portal and the student 
 
 5. The student wallet polls `GET /api/students/:id/credentials` every **10 seconds**.
 6. When it detects a credential with `revocationPendingAt` set but `revocationConfirmedAt` unset, it calls `POST /api/students/:id/credentials/:recordId/revocation-confirmed`.
-7. The Issuer API sets `revoked: true` and `revocationConfirmedAt` on the credential record.
-8. The Issuer Portal sees `revoked: true` on its next poll and updates the badge to **Revoked** (red), showing the confirmation timestamp.
-9. In the student wallet, the diploma moves from **Verified Diplomas** to the **Revoked** tab (sorted newest-first by `revocationConfirmedAt`).
+7. The Issuer API sets `revoked: true` and `revocationConfirmedAt` on the credential record. It also writes a **revocation anchor** to Cardano (a second transaction referencing the original `vcHash`) and stores `cardanoRevocationTxHash` and `cardanoRevocationUrl`.
+8. The Issuer Portal sees `revoked: true` on its next poll and updates the badge to **Revoked** (red), showing the confirmation timestamp and both Cardano anchor links (issuance + revocation).
+9. In the student wallet, the diploma moves from **Verified Diplomas** to the **Revoked** tab (sorted newest-first by `revocationConfirmedAt`), displaying both the issuance anchor and the revocation anchor.
 
 > **Why two phases?** The status list bit is flipped immediately (so verifiers see the revocation at once), but the student wallet needs a chance to update its local Pluto store. The two-phase design ensures the issuer portal only shows **Revoked** once the student's device has actually processed it — preventing a race condition where the wallet still shows the credential as valid while the portal shows it as revoked.
 
@@ -87,7 +90,8 @@ If a diploma must be revoked (e.g. the student withdrew or it was issued in erro
 1. Issuer Portal → **Students** → click **Credentials** next to the student → click **Revoke** on the credential → enter a reason.
 2. The revocation bit is flipped immediately in the agent. The diploma moves to **Revoking…** state.
 3. The student's wallet polls every 10 seconds and automatically acknowledges the revocation. Once confirmed, the diploma moves from the **Verified Diplomas** tab to the **Revoked** tab (most recently revoked shown first).
-4. The Issuer Portal **Dashboard** reflects the final **Revoked** state with the confirmation timestamp.
+4. A **revocation anchor** (second Cardano transaction) is written automatically. Both the issuance and revocation anchor links appear in the Issuer Portal (Dashboard + Students) and in the student wallet's Revoked tab.
+5. The Issuer Portal **Dashboard** reflects the final **Revoked** state with the confirmation timestamp.
 
 ---
 
@@ -366,12 +370,26 @@ Then re-run Steps 3–4.
 
 ## How Cardano anchoring works (optional reading)
 
-Each time a diploma is issued, the `issuer-api` backend:
+Cardano anchoring uses a **wallet-confirmed callback** architecture — the anchor is only written once the student's wallet has provably received and stored the credential.
 
-1. Computes a SHA-256 hash of the signed JWT credential.
-2. Submits a Cardano transaction to the **preprod testnet** with the hash embedded in the transaction metadata under label `674`.
+### Issuance anchor
 
-This creates an **immutable public record** that this exact credential was issued at this exact time. Even if the university website goes down, the hash on Cardano is permanent. A verifier can re-hash the JWT and confirm it matches the on-chain record.
+1. After the student wallet stores a new credential, it calls `POST /api/students/:id/credentials/:recordId/wallet-confirmed`.
+2. The Issuer API computes a SHA-256 hash of the credential (deterministic JSON serialisation), then submits a Cardano preprod transaction with the hash in metadata under label `674` (CIP-0020).
+3. The `cardanoTxHash` and `cardanoscanUrl` are stored on the credential record and surfaced in both the Issuer Portal (Students page, Dashboard) and the student wallet (diploma card anchor link).
+
+### Revocation anchor
+
+1. After the student wallet acknowledges a revocation, the Issuer API writes a second Cardano transaction referencing the original `vcHash` with a revocation notice.
+2. The `cardanoRevocationTxHash` and `cardanoRevocationUrl` are stored separately and shown as a distinct link in both portals.
+
+### Why wallet-confirmed?
+
+Anchoring on wallet-confirmed (rather than on `CredentialSent`) guarantees the credential has actually been received and stored before creating a permanent on-chain record. This prevents orphaned anchors for credentials that were offered but never accepted.
+
+### Startup catch-up
+
+If the wallet was offline when the credential arrived, the startup confirmation loop re-fires `wallet-confirmed` for any credential that has an `issuingDid` but no `cardanoTxHash` yet — so anchoring completes the next time the student opens their wallet.
 
 ---
 

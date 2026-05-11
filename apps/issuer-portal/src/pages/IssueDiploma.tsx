@@ -6,7 +6,7 @@ import {
   createCredentialOffer,
   pollCredentialRecord,
   waitForConnection,
-  writeVcHashToCardano,
+  saveIssuedCredential,
   listManagedDids,
   listSchemas,
   fetchStudent,
@@ -168,18 +168,15 @@ export function IssueDiploma() {
         schemaId,
       });
 
+      if (selectedStudent) {
+        try {
+          await saveIssuedCredential(selectedStudent.id, { credentialRecordId: record.recordId, degree: form.degree, graduationDate: form.graduationDate, ...(form.gpa ? { gpa: parseFloat(form.gpa) } : {}), issuingDid, schemaId, studentName: form.studentName, studentIdField: form.studentId });
+        } catch { /* non-fatal */ }
+      }
+
       setStatusMsg("Offer sent — waiting for student wallet to accept the credential…");
       const finalRecord = await pollCredentialRecord(record.recordId);
       setCredentialRecord(finalRecord);
-
-      setStatusMsg("Writing VC hash to Cardano preprod metadata…");
-      try {
-        const cardano = await writeVcHashToCardano(finalRecord);
-        setCardanoResult(cardano);
-      } catch (cardanoErr) {
-        console.warn("Cardano write failed (non-fatal):", cardanoErr);
-        setCardanoResult(null);
-      }
 
       setStep("success");
     } catch (e) {
@@ -246,18 +243,15 @@ export function IssueDiploma() {
         schemaId,
       });
 
+      if (selectedStudent) {
+        try {
+          await saveIssuedCredential(selectedStudent.id, { credentialRecordId: record.recordId, degree: form.degree, graduationDate: form.graduationDate, ...(form.gpa ? { gpa: parseFloat(form.gpa) } : {}), issuingDid, schemaId, studentName: form.studentName, studentIdField: form.studentId });
+        } catch { /* non-fatal */ }
+      }
+
       setStatusMsg("Offer sent — waiting for student wallet to accept the credential…");
       const finalRecord = await pollCredentialRecord(record.recordId);
       setCredentialRecord(finalRecord);
-
-      setStatusMsg("Writing VC hash to Cardano preprod metadata…");
-      try {
-        const cardano = await writeVcHashToCardano(finalRecord);
-        setCardanoResult(cardano);
-      } catch (cardanoErr) {
-        console.warn("Cardano write failed (non-fatal):", cardanoErr);
-        setCardanoResult(null);
-      }
 
       setStep("success");
     } catch (e) {

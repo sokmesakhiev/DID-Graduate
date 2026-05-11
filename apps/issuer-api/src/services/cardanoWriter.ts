@@ -127,3 +127,48 @@ function truncate(value: string, maxLen: number): string {
   if (encoded.length <= maxLen) return value;
   return encoded.subarray(0, maxLen).toString("utf8");
 }
+
+/**
+ * Writes a VC revocation notice to Cardano as metadata on a minimal ADA transaction.
+ * References the original vcHash so the two transactions are linkable on-chain.
+ */
+export async function writeRevocationToCardano(params: {
+  vcHash: string;
+  vcId: string;
+  universityDid: string;
+  studentId: string;
+  reason?: string;
+}): Promise<CardanoWriteResult> {
+  const wallet = await getWallet();
+  const addresses = await wallet.getUsedAddresses();
+  const changeAddress = addresses[0] ?? (await wallet.getChangeAddress());
+
+  const metadata = {
+    msg: ["University Diploma VC Revocation"],
+    vcHash: params.vcHash,
+    vcId: truncate(params.vcId, 64),
+    universityDid: truncate(params.universityDid, 64),
+    studentId: truncate(params.studentId, 64),
+    revokedAt: new Date().toISOString(),
+    ...(params.reason ? { reason: truncate(params.reason, 64) } : {}),
+  };
+
+  const tx = new Transaction({ initiator: wallet });
+  tx.sendLovelace(changeAddress, "1500000");
+  tx.setMetadata(CARDANO_METADATA_LABEL, metadata);
+
+  const unsignedTx = await tx.build();
+  const signedTx = await wallet.signTx(unsignedTx);
+  const txHash = await wallet.submitTx(signedTx);
+
+  const network = process.env.CARDANO_NETWORK ?? "preprod";
+  const baseUrl =
+    network === "mainnet"
+      ? "https://cardanoscan.io"
+      : "https://preprod.cardanoscan.io";
+
+  return {
+    txHash,
+    cardanoscanUrl: `${baseUrl}/transaction/${txHash}`,
+  };
+}
