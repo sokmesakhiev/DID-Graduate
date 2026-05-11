@@ -48,6 +48,12 @@ export interface IssuedCredentialRecord {
   revocationPendingAt?: string;
   revocationConfirmedAt?: string;
   revocationReason?: string;
+  cardanoTxHash?: string;
+  cardanoscanUrl?: string;
+  cardanoRevocationTxHash?: string;
+  cardanoRevocationUrl?: string;
+  issuingDid?: string;
+  walletConfirmedAt?: string;
 }
 
 /** Fetch the list of issued credentials for this student (includes revocation status). */
@@ -160,6 +166,25 @@ export async function deliverPendingDiplomas(
     },
   });
   // Fire-and-forget: server handles issuance in background — no need to await response body
+}
+
+/** Notify the issuer-api that the wallet has successfully stored a credential.
+ *  The server uses this as the trigger to write the Cardano issuance anchor.
+ *  thid = DIDComm thread ID = Cloud Agent recordId */
+export async function walletConfirmedReceipt(
+  studentId: string,
+  token: string,
+  thid: string
+): Promise<void> {
+  try {
+    await fetch(
+      `${API_BASE}/api/students/${encodeURIComponent(studentId)}/credentials/${encodeURIComponent(thid)}/wallet-confirmed`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+  } catch { /* non-fatal — anchoring is best-effort */ }
 }
 
 // ── Wallet backup ─────────────────────────────────────────────────────────────

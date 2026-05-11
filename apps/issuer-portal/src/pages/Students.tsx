@@ -4,7 +4,6 @@ import {
   fetchStudents,
   createCredentialOffer,
   pollCredentialRecord,
-  writeVcHashToCardano,
   listManagedDids,
   listSchemas,
   queueDiploma,
@@ -151,14 +150,12 @@ function IssueModal({ student, issuingDid, schemaId, onClose }: IssueModalProps)
       }
 
       try {
-        await saveIssuedCredential(student.id, { credentialRecordId: record.recordId, degree, graduationDate, ...(gpaNum !== undefined ? { gpa: gpaNum } : {}) });
+        await saveIssuedCredential(student.id, { credentialRecordId: record.recordId, degree, graduationDate, ...(gpaNum !== undefined ? { gpa: gpaNum } : {}), issuingDid, schemaId, studentName: student.name, studentIdField: student.studentNumber || student.id });
       } catch { /* non-fatal */ }
 
       setStatusMsg("Offer sent \u2014 waiting for student wallet to accept\u2026");
       try {
-        const finalRecord = await pollCredentialRecord(record.recordId);
-        setStatusMsg("Writing VC hash to Cardano\u2026");
-        try { await writeVcHashToCardano(finalRecord); } catch { /* non-fatal */ }
+        await pollCredentialRecord(record.recordId);
       } catch { setOfferSentOnly(true); }
 
       setStep("success");
@@ -330,8 +327,11 @@ function CredentialsPanel({ student, onClose }: { student: RegisteredStudent; on
   }
 
   function credStatus(c: IssuedCredential) {
+    if (c.failedAt) return "failed" as const;
     if (c.revoked) return "revoked" as const;
     if (c.revocationPendingAt) return "revoking" as const;
+    if (c.deliveryState === "WalletConfirmed" || c.deliveryState === "CredentialSent") return "delivered" as const;
+    if (c.deliveryState === "OfferSent" || c.deliveryState === "OfferPending") return "pending" as const;
     return "active" as const;
   }
 
@@ -375,9 +375,12 @@ function CredentialsPanel({ student, onClose }: { student: RegisteredStudent; on
                 {[...creds].sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime()).map((c) => {
                   const status = credStatus(c);
                   const cfg = {
-                    active:   { bg: "#f0fdf4", border: "#86efac", color: "#15803d", label: "Active",         icon: "\u2713"  },
-                    revoking: { bg: "#fffbeb", border: "#fcd34d", color: "#d97706", label: "Revoking\u2026", icon: "\u23F3" },
-                    revoked:  { bg: "#fef2f2", border: "#fca5a5", color: "#dc2626", label: "Revoked",        icon: "\u2715"  },
+                    active:     { bg: "#f0fdf4", border: "#86efac", color: "#15803d", label: "Active",           icon: "\u2713"  },
+                    delivered:  { bg: "#f0fdf4", border: "#86efac", color: "#15803d", label: "Delivered",         icon: "\u2713"  },
+                    pending:    { bg: "#eff6ff", border: "#93c5fd", color: "#1d4ed8", label: "Pending Delivery",  icon: "\u23F3" },
+                    revoking:   { bg: "#fffbeb", border: "#fcd34d", color: "#d97706", label: "Revoking\u2026",   icon: "\u23F3" },
+                    revoked:    { bg: "#fef2f2", border: "#fca5a5", color: "#dc2626", label: "Revoked",           icon: "\u2715"  },
+                    failed:     { bg: "#fafafa", border: "#94a3b8", color: "#64748b", label: "Undelivered",       icon: "\u26A0"  },
                   }[status];
                   return (
                     <div key={c.credentialRecordId} style={{ border: `1px solid ${cfg.border}`, borderLeft: `4px solid ${cfg.color}`, background: cfg.bg, borderRadius: "10px", padding: "1rem 1.25rem" }}>
@@ -395,12 +398,49 @@ function CredentialsPanel({ student, onClose }: { student: RegisteredStudent; on
                           {c.revocationConfirmedAt && (
                             <div style={{ marginTop: "3px", fontSize: "0.75rem", color: "#94a3b8" }}>Confirmed {new Date(c.revocationConfirmedAt).toLocaleString()}</div>
                           )}
+                          {c.cardanoscanUrl && (
+                            <a
+                              href={c.cardanoscanUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: "#0369a1", textDecoration: "none", fontWeight: 600 }}
+                            >
+                              ⛓ Issuance anchor ↗
+                            </a>
+                          )}
+                          {c.cardanoRevocationUrl && (
+                            <a
+                              href={c.cardanoRevocationUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ marginTop: "4px", display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: "#dc2626", textDecoration: "none", fontWeight: 600 }}
+                            >
+                              ⛓ Revocation on-chain ↗
+                            </a>
+                          )}
+                          {/* Delivery state badge */}
+                          {c.deliveryState && (
+                            <div style={{ marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "0.73rem" }}>
+                              <span style={{ color: "#94a3b8" }}>Agent state:</span>
+                              <span style={{ fontWeight: 700, color: c.deliveryState === "CredentialSent" ? "#16a34a" : c.deliveryState.includes("Problem") ? "#dc2626" : "#d97706" }}>
+                                {c.deliveryState}
+                              </span>
+                              {c.deliveryCheckedAt && (
+                                <span style={{ color: "#cbd5e1" }}>
+                                  — checked {new Date(c.deliveryCheckedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {c.failedAt && c.failureReason && (
+                            <div style={{ marginTop: "4px", fontSize: "0.75rem", color: "#64748b", fontStyle: "italic" }}>{c.failureReason}</div>
+                          )}
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px", flexShrink: 0 }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "#fff", border: `1px solid ${cfg.color}55`, color: cfg.color, borderRadius: "999px", padding: "2px 10px", fontSize: "0.73rem", fontWeight: 700, whiteSpace: "nowrap" }}>
                             {cfg.icon} {cfg.label}
                           </span>
-                          {status === "active" && (
+                          {(status === "active" || status === "delivered") && (
                             <button
                               onClick={() => { setRevokeTarget(c); setRevokeReason(""); }}
                               disabled={revoking === c.credentialRecordId}

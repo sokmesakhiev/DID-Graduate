@@ -308,7 +308,7 @@ export async function acceptInvitation(invitationUrl: string): Promise<void> {
  * We type-guard with Array.isArray to handle only message events.
  */
 export function registerMessageListener(
-  onCredentialIssued: (credential: SDK.Domain.Credential) => void,
+  onCredentialIssued: (credential: SDK.Domain.Credential, thid: string) => void,
   onProofRequest: (request: SDK.Domain.Message) => void
 ): () => void {
   const agent = _agent;
@@ -342,7 +342,7 @@ export function registerMessageListener(
             const issued = SDK.IssueCredential.fromMessage(message);
             const credential = await agent.processIssuedCredentialMessage(issued);
             console.log("[wallet] Credential stored successfully");
-            onCredentialIssued(credential);
+            onCredentialIssued(credential, message.thid ?? message.id);
           } catch (e) {
             console.error("[wallet] Failed to process issued credential:", e);
           }

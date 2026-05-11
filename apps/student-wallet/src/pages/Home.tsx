@@ -104,11 +104,19 @@ export function Home() {
   }).reverse();
 
   // Build a set of (degree||graduationDate) pairs that are revoked/pending per server records.
-  // This drives the tab split — server is the source of truth, not Pluto parsing.
+  // A pair is only fully revoked if it has NO active server records — this handles the case
+  // where a student has both a revoked and an active credential with the same degree+date
+  // (common during testing / re-issuance), which should NOT hide the active credential.
+  const activeServerPairs = new Set(
+    issuedRecords
+      .filter((r) => !r.revoked && !r.revocationPendingAt)
+      .map((r) => `${r.degree}||${r.graduationDate}`)
+  );
   const revokedByServer = new Set(
     issuedRecords
       .filter((r) => r.revoked || !!r.revocationPendingAt)
       .map((r) => `${r.degree}||${r.graduationDate}`)
+      .filter((key) => !activeServerPairs.has(key))
   );
 
   const activeCreds = deduped.filter((c) => {
@@ -126,6 +134,14 @@ export function Home() {
     if (!degree || !graduationDate) return false;
     return revokedByServer.has(`${degree}||${graduationDate}`);
   });
+
+  /** Returns the most recently revoked server record matching a given degree+graduationDate pair. */
+  function findRevokedRecord(degree: string | undefined, graduationDate: string | undefined) {
+    if (!degree || !graduationDate) return undefined;
+    return issuedRecords
+      .filter((r) => r.degree === degree && r.graduationDate === graduationDate && (r.revoked || !!r.revocationPendingAt))
+      .sort((a, b) => new Date(b.revocationConfirmedAt ?? b.revocationPendingAt ?? 0).getTime() - new Date(a.revocationConfirmedAt ?? a.revocationPendingAt ?? 0).getTime())[0];
+  }
 
   return (
     <>
@@ -251,9 +267,11 @@ export function Home() {
               No active diplomas yet. Your issuer will send you one when you&apos;re graduated.
             </div>
           )}
-          {activeCreds.map((cred, i) => (
-            <DiplomaCard key={i} credential={cred} />
-          ))}
+          {activeCreds.map((cred, i) => {
+            const { degree, graduationDate } = extractClaimsForMatch(cred);
+            const rec = issuedRecords.find((r) => r.degree === degree && r.graduationDate === graduationDate && !r.revoked && !r.revocationPendingAt);
+            return <DiplomaCard key={i} credential={cred} cardanoscanUrl={rec?.cardanoscanUrl} />;
+          })}
         </>
       )}
 
@@ -269,18 +287,15 @@ export function Home() {
             .sort((a, b) => {
               const { degree: da, graduationDate: ga } = extractClaimsForMatch(a);
               const { degree: db, graduationDate: gb } = extractClaimsForMatch(b);
-              const recA = issuedRecords.find((r) => r.degree === da && r.graduationDate === ga && (r.revoked || !!r.revocationPendingAt));
-              const recB = issuedRecords.find((r) => r.degree === db && r.graduationDate === gb && (r.revoked || !!r.revocationPendingAt));
+              const recA = findRevokedRecord(da, ga);
+              const recB = findRevokedRecord(db, gb);
               const tA = new Date(recA?.revocationConfirmedAt ?? recA?.revocationPendingAt ?? 0).getTime();
               const tB = new Date(recB?.revocationConfirmedAt ?? recB?.revocationPendingAt ?? 0).getTime();
               return tB - tA;
             })
             .map((cred, i) => {
               const { degree, graduationDate } = extractClaimsForMatch(cred);
-              const rec = issuedRecords.find(
-                (r) => r.degree === degree && r.graduationDate === graduationDate &&
-                       (r.revoked || !!r.revocationPendingAt)
-              );
+              const rec = findRevokedRecord(degree, graduationDate);
               return (
                 <DiplomaCard
                   key={i}
@@ -288,6 +303,8 @@ export function Home() {
                   revoked
                   revocationReason={rec?.revocationReason}
                   revocationDate={rec?.revocationConfirmedAt ?? rec?.revocationPendingAt}
+                  cardanoscanUrl={rec?.cardanoscanUrl}
+                  cardanoRevocationUrl={rec?.cardanoRevocationUrl}
                 />
               );
             })}

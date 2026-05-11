@@ -9,6 +9,8 @@ interface DiplomaCardProps {
   revoked?: boolean;
   revocationReason?: string;
   revocationDate?: string;
+  cardanoscanUrl?: string;
+  cardanoRevocationUrl?: string;
 }
 
 function extractClaims(credential: SDK.Domain.Credential): DiplomaCredentialSubject | null {
@@ -47,7 +49,7 @@ function extractClaims(credential: SDK.Domain.Credential): DiplomaCredentialSubj
   }
 }
 
-function CertificateModal({ claims, onClose }: { claims: DiplomaCredentialSubject; onClose: () => void }) {
+function CertificateModal({ claims, cardanoscanUrl, onClose }: { claims: DiplomaCredentialSubject; cardanoscanUrl?: string; onClose: () => void }) {
   const overlay: CSSProperties = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -141,6 +143,22 @@ function CertificateModal({ claims, onClose }: { claims: DiplomaCredentialSubjec
           </div>
         </div>
 
+        {/* Blockchain anchor link */}
+        {cardanoscanUrl && (
+          <div style={{ marginTop: "1.25rem", padding: "0.6rem 1rem", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "6px", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "0.7rem", fontFamily: "sans-serif", color: "#1d4ed8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>⛓ Blockchain Anchor</span>
+            <a
+              href={cardanoscanUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontSize: "0.75rem", color: "#1d4ed8", fontFamily: "sans-serif", fontWeight: 600 }}
+            >
+              View on Cardanoscan ↗
+            </a>
+          </div>
+        )}
+
         {/* Issuer DID */}
         {claims.universityDid && (
           <div style={{ marginTop: "1.25rem", fontSize: "0.65rem", color: "#94a3b8", fontFamily: "monospace", wordBreak: "break-all" }}>
@@ -159,7 +177,7 @@ function CertificateModal({ claims, onClose }: { claims: DiplomaCredentialSubjec
   );
 }
 
-export function DiplomaCard({ credential, compact = false, revoked = false, revocationReason, revocationDate }: DiplomaCardProps) {
+export function DiplomaCard({ credential, compact = false, revoked = false, revocationReason, revocationDate, cardanoscanUrl, cardanoRevocationUrl }: DiplomaCardProps) {
   const [showModal, setShowModal] = useState(false);
   const claims = extractClaims(credential);
 
@@ -232,9 +250,48 @@ export function DiplomaCard({ credential, compact = false, revoked = false, revo
             )}
           </div>
         )}
+        {!compact && !revoked && cardanoscanUrl && (
+          <div style={{ marginTop: "0.75rem", paddingTop: "0.75rem", borderTop: "1px solid #e2e8f0" }}>
+            <a
+              href={cardanoscanUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.78rem", color: "#1d4ed8", fontWeight: 600, textDecoration: "none" }}
+            >
+              ⛓ On-chain anchor ↗
+            </a>
+          </div>
+        )}
+        {!compact && revoked && (cardanoscanUrl || cardanoRevocationUrl) && (
+          <div style={{ marginTop: "0.75rem", paddingTop: "0.75rem", borderTop: "1px solid #fecaca", display: "flex", flexDirection: "column", gap: "4px" }}>
+            {cardanoscanUrl && (
+              <a
+                href={cardanoscanUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.78rem", color: "#1d4ed8", fontWeight: 600, textDecoration: "none" }}
+              >
+                ⛓ Issuance anchor ↗
+              </a>
+            )}
+            {cardanoRevocationUrl && (
+              <a
+                href={cardanoRevocationUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.78rem", color: "#dc2626", fontWeight: 600, textDecoration: "none" }}
+              >
+                ⛓ Revocation on-chain ↗
+              </a>
+            )}
+          </div>
+        )}
       </div>
 
-      {showModal && <CertificateModal claims={claims} onClose={() => setShowModal(false)} />}
+      {showModal && <CertificateModal claims={claims} cardanoscanUrl={cardanoscanUrl} onClose={() => setShowModal(false)} />}
     </>
   );
 }

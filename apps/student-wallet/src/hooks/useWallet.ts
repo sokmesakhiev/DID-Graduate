@@ -17,10 +17,12 @@ import {
   createIssuerConnection,
   saveConnectionId,
   deliverPendingDiplomas,
+  walletConfirmedReceipt,
   verifyConnection,
   fetchWalletBackup,
   saveWalletBackup,
   saveWalletSeed,
+  fetchStudentCredentials,
 } from "../services/authApi.js";
 import type { StudentUser } from "../services/authApi.js";
 
@@ -94,6 +96,37 @@ export function useWallet(
 
       await refreshCredentials();
 
+      // Startup confirmation: fire walletConfirmedReceipt for any credential already
+      // in Pluto that the server hasn't anchored yet. Handles credentials received
+      // before this code was deployed, or while the wallet was offline.
+      if (token) {
+        try {
+          const serverRecords = await fetchStudentCredentials(currentUser.id, token);
+          const plutoCreds = await getAllCredentials();
+          for (const record of serverRecords) {
+            if (!record.issuingDid || record.cardanoTxHash || record.revoked) continue;
+            const hasIt = plutoCreds.some((c) => {
+              try {
+                const cr = c as unknown as Record<string, unknown>;
+                let raw: unknown =
+                  cr["claims"] ??
+                  cr["credentialSubject"] ??
+                  (cr["vc"] as Record<string, unknown> | undefined)?.["credentialSubject"];
+                if (Array.isArray(raw)) {
+                  const first = raw[0] as Record<string, unknown>;
+                  raw = (first && "name" in first)
+                    ? Object.fromEntries((raw as Array<{ name: string; value: unknown }>).map((x) => [x.name, x.value]))
+                    : first;
+                }
+                const obj = raw as Record<string, unknown>;
+                return obj["degree"] === record.degree && obj["graduationDate"] === record.graduationDate;
+              } catch { return false; }
+            });
+            if (hasIt) void walletConfirmedReceipt(currentUser.id, token, record.credentialRecordId);
+          }
+        } catch { /* non-fatal */ }
+      }
+
       // Migration / repair: save an up-to-date backup when:
       //   (a) no backup has ever been saved yet, OR
       //   (b) a backup exists but has no credentials (was saved with the
@@ -113,8 +146,13 @@ export function useWallet(
       }
 
       const unsubscribe = registerMessageListener(
-        async (_newCred) => {
+        async (_newCred, thid) => {
           await refreshCredentials();
+          // Notify the issuer-api that the wallet has the credential.
+          // This is the trigger for the Cardano issuance anchor.
+          if (currentUser && token && thid) {
+            void walletConfirmedReceipt(currentUser.id, token, thid);
+          }
           // Save an up-to-date backup after each new credential so any device
           // can restore to the latest state on next login.
           if (token) {
